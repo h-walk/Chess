@@ -31,7 +31,7 @@ def build_knight_moves():
 def build_king_moves():
     """
     king_moves[(r,c)] = [(r2,c2), ...] for all squares a king can move to from (r,c).
-    Doesn’t handle castling (we treat that separately).
+    Doesn’t handle castling here (we treat that separately).
     """
     moves = {}
     offsets = [
@@ -52,18 +52,13 @@ def build_king_moves():
 def build_sliding_moves():
     """
     For rooks, bishops, queens we store 'rays' in each direction from each square.
-    e.g. rook_slides[(r,c)] = [
-      [ (r+1, c), (r+2, c), ... ] up to board edge,
-      [ (r-1, c), (r-2, c), ... ],
-      [ (r, c+1), (r, c+2), ... ],
-      [ (r, c-1), (r, c-2), ... ]
-    ]
-    And similarly for bishops. Queens is union of rook + bishop directions.
+    rook_slides[(r,c)] = a list of 4 rays (for each cardinal dir).
+    bishop_slides[(r,c)] = a list of 4 rays (for each diagonal dir).
+    Each ray is a list of squares from (r,c) outward until board edge.
     """
     rook_slides = {}
     bishop_slides = {}
 
-    # Directions
     rook_dirs = [(1,0), (-1,0), (0,1), (0,-1)]
     bishop_dirs = [(1,1), (1,-1), (-1,1), (-1,-1)]
 
@@ -95,17 +90,13 @@ def build_sliding_moves():
 
     return rook_slides, bishop_slides
 
-
-# Now we build the tables up front
+# Build our global tables
 KNIGHT_MOVES = build_knight_moves()
 KING_MOVES = build_king_moves()
 ROOK_SLIDES, BISHOP_SLIDES = build_sliding_moves()
 
-def in_bounds(r, c):
-    return 0 <= r < 8 and 0 <= c < 8
-
 ############################################
-# Original data structures
+# Board setup + utility
 ############################################
 
 STARTING_BOARD = [
@@ -119,8 +110,7 @@ STARTING_BOARD = [
     list("RNBQKBNR"),
 ]
 
-# We'll track castling rights for each side.
-# (king_side, queen_side)
+# We'll track castling rights per color as [king_side, queen_side].
 CASTLE_RIGHTS = {
     "white": [True, True],
     "black": [True, True]
@@ -165,11 +155,10 @@ def parse_move(move):
         return None, None
 
 ############################################
-# Validation and movement
+# Checking for checks, validations
 ############################################
 
 def find_king_position(board, color):
-    # Return (row, col) of the king of given color
     king_char = 'K' if color == 'white' else 'k'
     for r in range(8):
         for c in range(8):
@@ -180,11 +169,11 @@ def find_king_position(board, color):
 def in_check(board, color):
     """
     Return True if 'color' is in check on 'board'.
-    We'll see if the king can be captured by any enemy piece.
+    We see if the king can be captured by any enemy piece.
     """
     king_pos = find_king_position(board, color)
     if king_pos is None:
-        return False
+        return False  # shouldn't happen unless the king is gone
 
     # Check all squares for enemy pieces that can move to king_pos
     for r in range(8):
@@ -195,6 +184,10 @@ def in_check(board, color):
                                  en_passant_target=None, checking_check=False):
                     return True
     return False
+
+############################################
+# Move validations (using truth tables + path checks)
+############################################
 
 def is_valid_move(board, start, end, turn_white, en_passant_target, checking_check=True):
     r1, c1 = start
@@ -210,20 +203,19 @@ def is_valid_move(board, start, end, turn_white, en_passant_target, checking_che
     piece_color = "white" if is_white(piece) else "black"
     if turn_white and piece_color != "white":
         return False
-    if (not turn_white) and piece_color != "black":
+    if not turn_white and piece_color != "black":
         return False
 
     target = board[r2][c2]
     if target != '.' and get_piece_color(target) == piece_color:
-        return False  # can’t capture your own piece
+        return False  # can't capture your own piece
 
-    # Validate by piece type
     p = piece.upper()
-
     if p == 'P':
         if not valid_pawn_move(board, start, end, turn_white, en_passant_target):
             return False
     elif p == 'N':
+        # Use knight table
         if end not in KNIGHT_MOVES[start]:
             return False
     elif p == 'B':
@@ -236,29 +228,25 @@ def is_valid_move(board, start, end, turn_white, en_passant_target, checking_che
         if not valid_queen_move(board, start, end):
             return False
     elif p == 'K':
-        # normal king move (castling is handled separately)
+        # Normal king move (excluding castling)
         if end not in KING_MOVES[start]:
             return False
     else:
         return False
 
-    # If checking_check = False, skip the next step
     if not checking_check:
         return True
 
-    # Make sure it doesn't leave our king in check
+    # Ensure this move won't leave our own king in check
     temp = copy_board(board)
     temp[r1][c1] = '.'
 
-    # handle en passant capture
-    if p == 'P':
-        # if en passant
-        if en_passant_target is not None:
-            ep_r, ep_c = en_passant_target
-            if (r2, c2) == (ep_r, ep_c) and c1 != c2 and temp[r2][c2] == '.':
-                # remove the captured pawn
-                direction = -1 if turn_white else 1
-                temp[r1][c2] = '.'
+    # En passant capture
+    if p == 'P' and en_passant_target is not None:
+        ep_r, ep_c = en_passant_target
+        if (r2, c2) == (ep_r, ep_c) and c1 != c2 and temp[r2][c2] == '.':
+            # remove the jumped pawn
+            temp[r1][c2] = '.'
 
     temp[r2][c2] = piece
     if in_check(temp, piece_color):
@@ -270,8 +258,7 @@ def valid_pawn_move(board, start, end, turn_white, en_passant_target):
     r1, c1 = start
     r2, c2 = end
     piece = board[r1][c1]
-
-    direction = -1 if turn_white else 1  # white moves up (-1), black down (+1)
+    direction = -1 if turn_white else 1
     start_row = 6 if turn_white else 1
     enemy_color = "black" if turn_white else "white"
 
@@ -300,31 +287,20 @@ def valid_pawn_move(board, start, end, turn_white, en_passant_target):
 
 def valid_rook_move(board, start, end):
     """
-    Use the precomputed rook_slides to see if (end) is in one of the rays from (start).
-    Then check that the path is not blocked.
+    Use the precomputed rook_slides to see if end is in one of the rays from start.
+    Then check for blocking.
     """
-    r1, c1 = start
-    r2, c2 = end
-
-    # Look through each direction-rain for start
     for ray in ROOK_SLIDES[start]:
         if end in ray:
-            # check if anything blocks
-            # move along the ray until we hit 'end' or a piece
+            # check if anything blocks on the way to end
             for sq in ray:
                 if sq == end:
-                    # we made it to end w/out collision
                     return True
                 if board[sq[0]][sq[1]] != '.':
-                    # if we bump into a piece before end, blocked
                     return False
     return False
 
 def valid_bishop_move(board, start, end):
-    """
-    Use bishop_slides, check for block.
-    """
-    r1, c1 = start
     for ray in BISHOP_SLIDES[start]:
         if end in ray:
             for sq in ray:
@@ -335,11 +311,7 @@ def valid_bishop_move(board, start, end):
     return False
 
 def valid_queen_move(board, start, end):
-    """
-    A queen is rook + bishop. So we check both.
-    """
-    # We can do it simply by combining both checks, or build a union of rook+bishop slides.
-    # Let’s do the quick method: if rook or bishop logic is satisfied => valid.
+    # Queen = rook + bishop
     if valid_rook_move(board, start, end):
         return True
     if valid_bishop_move(board, start, end):
@@ -356,33 +328,34 @@ def can_castle(board, color, side, castling_rights):
     if side == 'king':
         if not castling_rights[0]:
             return False
-        # squares: e->f->g must be empty
+        # e->f->g must be empty
         if board[row][4] != king_char:
             return False
         if board[row][5] != '.' or board[row][6] != '.':
             return False
-        # check if rook is correct color
-        if not (board[row][7] in ('R', 'r') and get_piece_color(board[row][7]) == color):
+        # check rook presence
+        if not (board[row][7] in ('R','r') and get_piece_color(board[row][7]) == color):
             return False
         # check squares not in check
         temp = copy_board(board)
-        # king e->f
+        # step king to f
         temp[row][4], temp[row][5] = '.', king_char
         if in_check(temp, color):
             return False
-        # king f->g
+        # step king to g
         temp[row][5], temp[row][6] = '.', king_char
         if in_check(temp, color):
             return False
         return True
-    else:  # queen side
+    else:
+        # queen side
         if not castling_rights[1]:
             return False
         if board[row][4] != king_char:
             return False
         if board[row][3] != '.' or board[row][2] != '.' or board[row][1] != '.':
             return False
-        if not (board[row][0] in ('R', 'r') and get_piece_color(board[row][0]) == color):
+        if not (board[row][0] in ('R','r') and get_piece_color(board[row][0]) == color):
             return False
         temp = copy_board(board)
         # e->d
@@ -412,10 +385,6 @@ def do_castle(board, color, side):
         board[row][0] = '.'
 
 def promotion_choice(color):
-    """
-    For now, prompt the user to choose a promotion piece: Q, R, B, or N.
-    Return the appropriate uppercase/lowercase letter.
-    """
     while True:
         choice = input(f"Promote to Q, R, B, or N? ").upper()
         if choice in ['Q','R','B','N']:
@@ -423,53 +392,54 @@ def promotion_choice(color):
         print("Invalid choice, please enter Q, R, B, or N.")
 
 ############################################
-# Execute moves
+# Move execution
 ############################################
 
-def move_with_extras(board, start, end, turn_white, en_passant_target, castling_rights):
+def move_with_extras(board, start, end, turn_white, en_passant_target, castling_rights_dict):
     """
-    Perform the move, handling en passant, castling, promotion.
-    Returns (new_en_passant_target, updated_castling_rights).
+    Perform the move on 'board', handling en passant, castling, and promotion.
+    Returns (new_en_passant, updated_castling_rights_dict).
     """
     r1, c1 = start
     r2, c2 = end
     piece = board[r1][c1]
     p = piece.upper()
-    color = 'white' if is_white(piece) else 'black'
+    color = "white" if is_white(piece) else "black"
 
-    # Reset unless we do a 2-square pawn move
     new_en_passant = None
 
-    # Attempt castling if king moves from e->g or e->c in starting row
+    # Maybe we're castling
     row = 7 if color == 'white' else 0
     if p == 'K' and r1 == row and c1 == 4:
         # king side
-        if (r2, c2) == (row, 6) and can_castle(board, color, 'king', castling_rights[color]):
+        if (r2, c2) == (row, 6) and can_castle(board, color, 'king', castling_rights_dict[color]):
             do_castle(board, color, 'king')
-            castling_rights[color] = [False, False]
-            return None, castling_rights
+            castling_rights_dict[color] = [False, False]
+            return None, castling_rights_dict
         # queen side
-        if (r2, c2) == (row, 2) and can_castle(board, color, 'queen', castling_rights[color]):
+        if (r2, c2) == (row, 2) and can_castle(board, color, 'queen', castling_rights_dict[color]):
             do_castle(board, color, 'queen')
-            castling_rights[color] = [False, False]
-            return None, castling_rights
+            castling_rights_dict[color] = [False, False]
+            return None, castling_rights_dict
 
-    # Regular move
+    # If not castling, do a normal move
     board[r1][c1] = '.'
     # En passant capture
-    if p == 'P':
-        if en_passant_target is not None:
-            ep_r, ep_c = en_passant_target
-            if (r2, c2) == (ep_r, ep_c) and c1 != c2 and board[r2][c2] == '.':
-                # remove the captured pawn
-                board[r1][c2] = '.'
-        # If double-step, set en_passant_target
-        direction = -1 if color == 'white' else 1
-        if abs(r2 - r1) == 2:
-            mid_r = (r1 + r2) // 2
-            new_en_passant = (mid_r, c1)
+    if p == 'P' and en_passant_target is not None:
+        ep_r, ep_c = en_passant_target
+        # if we land on the en_passant_target and there's no piece there
+        # we must remove the jumped pawn behind it
+        if (r2, c2) == (ep_r, ep_c) and c1 != c2 and board[r2][c2] == '.':
+            board[r1][c2] = '.'
 
     board[r2][c2] = piece
+
+    # If we did a 2-square pawn move, set en-passant
+    if p == 'P':
+        direction = -1 if color == 'white' else 1
+        if abs(r2 - r1) == 2:
+            mid_r = (r1 + r2)//2
+            new_en_passant = (mid_r, c1)
 
     # Pawn promotion
     if p == 'P':
@@ -478,26 +448,26 @@ def move_with_extras(board, start, end, turn_white, en_passant_target, castling_
         elif color == 'black' and r2 == 7:
             board[r2][c2] = promotion_choice(color)
 
-    # Update castling rights if king/rook moved
+    # Revoke castling rights if king/rook moved
     if p == 'K':
-        castling_rights[color] = [False, False]
+        castling_rights_dict[color] = [False, False]
     elif p == 'R':
-        # if it was the a/h rook
+        # If it was the a/h rook
         if color == 'white':
-            if r1 == 7 and c1 == 0:  # Q-side
-                castling_rights[color][1] = False
-            elif r1 == 7 and c1 == 7:  # K-side
-                castling_rights[color][0] = False
+            if r1 == 7 and c1 == 0:
+                castling_rights_dict[color][1] = False
+            elif r1 == 7 and c1 == 7:
+                castling_rights_dict[color][0] = False
         else:
             if r1 == 0 and c1 == 0:
-                castling_rights[color][1] = False
+                castling_rights_dict[color][1] = False
             elif r1 == 0 and c1 == 7:
-                castling_rights[color][0] = False
+                castling_rights_dict[color][0] = False
 
-    return new_en_passant, castling_rights
+    return new_en_passant, castling_rights_dict
 
 ############################################
-# Main game loop
+# Main loop
 ############################################
 
 def main():
@@ -514,7 +484,6 @@ def main():
         player_color = "white" if turn_white else "black"
         player_str = "White" if turn_white else "Black"
 
-        # Check if in check
         if in_check(board, player_color):
             print(f"{player_str} is in check!")
 
@@ -528,30 +497,30 @@ def main():
             print("Invalid input format. Try again.")
             continue
 
+        # Validate first
         if is_valid_move(board, start, end, turn_white, en_passant_target):
-            # Check king safety after the move
+            # Next, ensure it doesn't leave our king in check
             temp_board = copy_board(board)
-            _, temp_cr = move_with_extras(
+            temp_cr = {
+                "white": castling_rights["white"][:],
+                "black": castling_rights["black"][:]
+            }
+            # Hypothetical move
+            _temp_enp, temp_cr = move_with_extras(
                 temp_board, start, end, turn_white,
-                en_passant_target,
-                {
-                    "white": castling_rights["white"][:],
-                    "black": castling_rights["black"][:]
-                }
+                en_passant_target, temp_cr
             )
             if in_check(temp_board, player_color):
                 print("Illegal: that would leave your king in check.")
                 continue
 
-            # If good, actually make the move
-            en_passant_target, castling_rights[player_color] = move_with_extras(
-                board, start, end, turn_white, en_passant_target,
-                castling_rights[player_color]
+            # If it's okay, do the real move
+            en_passant_target, castling_rights = move_with_extras(
+                board, start, end, turn_white, en_passant_target, castling_rights
             )
-
             turn_white = not turn_white
         else:
             print("Illegal move. Try again.")
 
 if __name__ == "__main__":
-    main()  
+    main()
